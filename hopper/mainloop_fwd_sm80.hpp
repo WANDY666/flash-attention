@@ -213,7 +213,7 @@ struct CollectiveMainloopFwdSm80 {
         int const* const seqused_k = nullptr;
         int const* const leftpad_k = nullptr;
         int const* const seqlens_rotary = nullptr;
-        bool const* const image_token_tag = nullptr;
+        int const* const image_token_end = nullptr;
     };
 
     // Device side kernel params
@@ -260,7 +260,7 @@ struct CollectiveMainloopFwdSm80 {
         int const* const seqused_k = nullptr;
         int const* const leftpad_k = nullptr;
         int const* const seqlens_rotary = nullptr;
-        bool const* const image_token_tag = nullptr;
+        int const* const image_token_end = nullptr;
     };
 
     static Params
@@ -304,7 +304,29 @@ struct CollectiveMainloopFwdSm80 {
                 args.kv_batch_idx,
                 args.cu_seqlens_q, args.cu_seqlens_k, args.cu_seqlens_k_new,
                 args.seqused_q, args.seqused_k, args.leftpad_k, args.seqlens_rotary,
-                args.image_token_tag};
+                args.image_token_end};
+    }
+
+    static CUTLASS_DEVICE int
+    get_m_block_image_token_end(Params const& params, SeqlenInfo_t const& seqlen_info, int const m_block) {
+        static constexpr int kBlockM = get<0>(TileShape_MNK{});
+        int image_end = 0;
+        if constexpr (Is_causal) {
+            if (params.image_token_end != nullptr) {
+                int m_idx_start = m_block * kBlockM;
+                int m_idx_end = (m_block + 1) * kBlockM;
+                if constexpr (PackGQA) {
+                    m_idx_start = params.qhead_per_khead_divmod.divide(m_idx_start);
+                    m_idx_end = params.qhead_per_khead_divmod.divide(m_idx_end - 1) + 1;
+                }
+                int valid_count = std::min(m_idx_end - m_idx_start, seqlen_info.seqlen_q - m_idx_start);
+                if (valid_count > 0) {
+                    image_end = flash::warp_max_reduce_int(
+                        params.image_token_end + seqlen_info.offset_q + m_idx_start, valid_count);
+                }
+            }
+        }
+        return std::min(image_end, seqlen_info.seqlen_k);
     }
 
     template <typename SharedStorage, typename FrgTensorO, typename Softmax>
@@ -327,26 +349,11 @@ struct CollectiveMainloopFwdSm80 {
         int const bidb = get<2>(block_coord);
         int const split_idx = get<3>(block_coord);
         int const bidh_kv = !PackGQA ? params.qhead_per_khead_divmod.divide(bidh) : bidh;
-        bool has_image = false;
-        if constexpr (Is_causal) {
-            if (params.image_token_tag != nullptr) {
-                int m_idx_start = m_block * kBlockM;
-                int m_idx_end = (m_block + 1) * kBlockM;
-                if constexpr (PackGQA) {
-                    m_idx_start = params.qhead_per_khead_divmod.divide(m_idx_start);
-                    m_idx_end = params.qhead_per_khead_divmod.divide(m_idx_end - 1) + 1;
-                }
-                int valid_count = std::min(m_idx_end - m_idx_start, seqlen_info.seqlen_q - m_idx_start);
-                if (valid_count > 0) {
-                    has_image = flash::warp_or_reduce_bool(
-                        params.image_token_tag + seqlen_info.offset_q + m_idx_start, valid_count);
-                }
-            }
-        }
+        int const image_token_end = get_m_block_image_token_end(params, seqlen_info, m_block);
         auto n_block_min_max = BlockMN_t::get_n_block_min_max(
             seqlen_info, m_block, bidb, split_idx, params.num_splits,
             params.window_size_left, params.window_size_right, params.attention_chunk_divmod,
-            params.qhead_per_khead_divmod, has_image);
+            params.qhead_per_khead_divmod, image_token_end);
         int const n_block_min = get<0>(n_block_min_max);
         int const n_block_max = get<1>(n_block_min_max);
         // It's possible to have n_block_max <= n_block_min. We don't want to load Q or change any barrier
@@ -572,7 +579,7 @@ struct CollectiveMainloopFwdSm80 {
         flash::Mask<kBlockM, kBlockN, PackGQA, TiledMma> mask(
             thread_idx, seqlen_q, seqlen_k, params.window_size_left, params.window_size_right, 0 /*sink_token_length*/,
             params.attention_chunk_divmod, params.qhead_per_khead_divmod,
-            params.image_token_tag, seqlen_info.offset_q
+            params.image_token_end, seqlen_info.offset_q
         );
 
         float softcap_val = params.softcap_val;
@@ -685,27 +692,11 @@ struct CollectiveMainloopFwdSm80 {
                  cute::tuple<int32_t, int32_t, int32_t, int32_t> block_coord
     ) {
         auto [m_block, bidh, bidb, split_idx] = block_coord;
-        bool has_image = false;
-        if constexpr (Is_causal) {
-            if (params.image_token_tag != nullptr) {
-                static constexpr int kBlockM_ = get<0>(TileShape_MNK{});
-                int m_idx_start = m_block * kBlockM_;
-                int m_idx_end = (m_block + 1) * kBlockM_;
-                if constexpr (PackGQA) {
-                    m_idx_start = params.qhead_per_khead_divmod.divide(m_idx_start);
-                    m_idx_end = params.qhead_per_khead_divmod.divide(m_idx_end - 1) + 1;
-                }
-                int valid_count = std::min(m_idx_end - m_idx_start, seqlen_info.seqlen_q - m_idx_start);
-                if (valid_count > 0) {
-                    has_image = flash::warp_or_reduce_bool(
-                        params.image_token_tag + seqlen_info.offset_q + m_idx_start, valid_count);
-                }
-            }
-        }
+        int const image_token_end = get_m_block_image_token_end(params, seqlen_info, m_block);
         auto n_block_new_min_max = BlockMN_t::get_n_block_k_new_min_max(
             seqlen_info, m_block, bidb, split_idx, params.num_splits,
             params.window_size_left, params.window_size_right, params.attention_chunk_divmod,
-            params.qhead_per_khead_divmod, has_image);
+            params.qhead_per_khead_divmod, image_token_end);
         int const n_block_new_min = get<0>(n_block_new_min_max);
         int const n_block_new_max = get<1>(n_block_new_min_max);
         if (n_block_new_max <= n_block_new_min) { return false; }

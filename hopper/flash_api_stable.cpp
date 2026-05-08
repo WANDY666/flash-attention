@@ -773,7 +773,7 @@ mha_fwd(Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seqlens_
         int64_t num_splits,
         std::optional<bool> pack_gqa_,
         int64_t sm_margin,
-        std::optional<Tensor> image_token_tag_
+        std::optional<Tensor> image_token_end_
         ) {
 
     auto dprops = get_device_prop();
@@ -1212,17 +1212,17 @@ mha_fwd(Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seqlens_
         }
     }
 
-    if (image_token_tag_.has_value()) {
-        auto image_token_tag = image_token_tag_.value();
-        STD_TORCH_CHECK(image_token_tag.is_cuda(), "image_token_tag must be on CUDA");
-        STD_TORCH_CHECK(image_token_tag.is_contiguous(), "image_token_tag must be contiguous");
-        STD_TORCH_CHECK(image_token_tag.scalar_type() == torch::headeronly::ScalarType::Bool, "image_token_tag must have dtype torch.bool");
-        STD_TORCH_CHECK(image_token_tag.sizes() == std::array<int64_t, 1>{total_q}, "image_token_tag must have shape [total_q]");
-        STD_TORCH_CHECK(is_varlen_q, "image_token_tag requires varlen mode (cu_seqlens_q must be provided)");
-        STD_TORCH_CHECK(is_causal, "image_token_tag requires causal=True");
-        STD_TORCH_CHECK(!params.is_local, "image_token_tag is incompatible with sliding window attention");
-        STD_TORCH_CHECK(attention_chunk == 0, "image_token_tag is incompatible with attention_chunk");
-        params.image_token_tag = static_cast<bool*>(image_token_tag.data_ptr());
+    if (image_token_end_.has_value()) {
+        auto image_token_end = image_token_end_.value();
+        STD_TORCH_CHECK(image_token_end.is_cuda(), "image_token_end must be on CUDA");
+        STD_TORCH_CHECK(image_token_end.is_contiguous(), "image_token_end must be contiguous");
+        STD_TORCH_CHECK(image_token_end.scalar_type() == torch::headeronly::ScalarType::Int, "image_token_end must have dtype torch.int32");
+        STD_TORCH_CHECK(image_token_end.sizes() == std::array<int64_t, 1>{total_q}, "image_token_end must have shape [total_q]");
+        STD_TORCH_CHECK(is_varlen_q, "image_token_end requires varlen mode (cu_seqlens_q must be provided)");
+        STD_TORCH_CHECK(is_causal, "image_token_end requires causal=True");
+        STD_TORCH_CHECK(!params.is_local, "image_token_end is incompatible with sliding window attention");
+        STD_TORCH_CHECK(attention_chunk == 0, "image_token_end is incompatible with attention_chunk");
+        params.image_token_end = static_cast<int*>(image_token_end.data_ptr());
     }
 
     #ifdef FLASHATTENTION_DISABLE_LOCAL
@@ -1804,9 +1804,9 @@ void boxed_mha_fwd(
     auto num_splits = to<int64_t>(stack[31]);
     auto pack_gqa = to<std::optional<bool>>(stack[32]);
     auto sm_margin = to<int64_t>(stack[33]);
-    auto image_token_tag = to<std::optional<Tensor>>(stack[34]);
+    auto image_token_end = to<std::optional<Tensor>>(stack[34]);
 
-    auto [out_, softmax_lse, out_accum, softmax_lse_accum] = mha_fwd(q, k, v, k_new, v_new, q_v, out, cu_seqlens_q, cu_seqlens_k, cu_seqlens_k_new, seqused_q, seqused_k, max_seqlen_q, max_seqlen_k, page_table, kv_batch_idx, leftpad_k, rotary_cos, rotary_sin, seqlens_rotary, q_descale, k_descale, v_descale, softmax_scale, is_causal, window_size_left, window_size_right, attention_chunk, softcap, is_rotary_interleaved, scheduler_metadata, num_splits, pack_gqa, sm_margin, image_token_tag);
+    auto [out_, softmax_lse, out_accum, softmax_lse_accum] = mha_fwd(q, k, v, k_new, v_new, q_v, out, cu_seqlens_q, cu_seqlens_k, cu_seqlens_k_new, seqused_q, seqused_k, max_seqlen_q, max_seqlen_k, page_table, kv_batch_idx, leftpad_k, rotary_cos, rotary_sin, seqlens_rotary, q_descale, k_descale, v_descale, softmax_scale, is_causal, window_size_left, window_size_right, attention_chunk, softcap, is_rotary_interleaved, scheduler_metadata, num_splits, pack_gqa, sm_margin, image_token_end);
 
 
     stack[0] = from(out_);
@@ -1939,7 +1939,7 @@ STABLE_TORCH_LIBRARY(flash_attn_3, m) {
         "int num_splits = 0,"
         "bool? pack_gqa = None,"
         "int sm_margin = 0,"
-        "Tensor? image_token_tag = None) -> (Tensor(out!), Tensor, Tensor, Tensor)");
+        "Tensor? image_token_end = None) -> (Tensor(out!), Tensor, Tensor, Tensor)");
     m.def("bwd("
         "Tensor dout,"
         "Tensor q,"

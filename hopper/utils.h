@@ -672,19 +672,20 @@ CUTE_DEVICE T warp_uniform(T a) {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// Warp-cooperative OR reduction over a bool array in global memory.
-// Each lane reads a strided subset of [ptr, ptr+count), then all lanes vote.
-// Returns true if any element in the range is true.
-// All threads in the warp must call this (no divergence before __ballot_sync).
-CUTE_DEVICE bool warp_or_reduce_bool(bool const* __restrict__ ptr, int count) {
+// Warp-cooperative max reduction over an int array in global memory.
+// Each lane reads a strided subset of [ptr, ptr+count), then all lanes reduce.
+// All threads in the warp must call this (no divergence before __shfl_down_sync).
+CUTE_DEVICE int warp_max_reduce_int(int const* __restrict__ ptr, int count) {
     int lane = threadIdx.x % cutlass::NumThreadsPerWarp;
-    bool local_or = false;
+    int local_max = 0;
     for (int i = lane; i < count; i += cutlass::NumThreadsPerWarp) {
-        local_or = local_or || ptr[i];
-        if (local_or) { break; }
+        local_max = std::max(local_max, ptr[i]);
     }
-    unsigned mask = __ballot_sync(0xffffffff, local_or);
-    return mask != 0;
+    CUTLASS_PRAGMA_UNROLL
+    for (int offset = cutlass::NumThreadsPerWarp / 2; offset > 0; offset >>= 1) {
+        local_max = std::max(local_max, __shfl_down_sync(0xffffffff, local_max, offset));
+    }
+    return __shfl_sync(0xffffffff, local_max, 0);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -166,9 +166,9 @@ struct Flash_fwd_params : public Qkv_params {
     int arch;
     int num_sm;
 
-    // Image token tag: per-Q-token bool, packed like Q [total_q].
-    // When tag is true, the query does full attention (no causal mask).
-    bool * __restrict__ image_token_tag;
+    // Image token end: per-Q-token int32, packed like Q [total_q].
+    // When > 0, the query can additionally attend to keys before this batch-local KV position.
+    int * __restrict__ image_token_end;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
