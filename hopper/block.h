@@ -17,7 +17,7 @@ struct BlockMN {
             int const window_size_left, int const window_size_right,
             cutlass::FastDivmod const& attention_chunk_divmod,
             cutlass::FastDivmod const& qhead_per_khead_divmod,
-            bool const has_image = false) {
+            int const image_token_end = 0) {
 
         int const seqlen_k = seqlen_info.seqlen_k;
         int const seqlen_q = seqlen_info.seqlen_q;
@@ -31,11 +31,8 @@ struct BlockMN {
             if (Is_local && attention_chunk_divmod.divisor > 0) {
                 n_idx_right = std::min(n_idx_right, flash::round_up(attention_chunk_divmod, n_idx));
             }
-            // Image tokens need full attention — skip causal n_block_max restriction
-            // so that Split logic below partitions over the full K range.
-            if (!has_image) {
-                n_block_max = std::min(n_block_max, cute::ceil_div(n_idx_right, kBlockN));
-            }
+            int const n_idx_right_with_image = std::max(n_idx_right, image_token_end);
+            n_block_max = std::min(n_block_max, cute::ceil_div(n_idx_right_with_image, kBlockN));
         }
         int n_block_min = 0;
         if constexpr (Is_local) {
@@ -71,12 +68,12 @@ struct BlockMN {
             int const window_size_left, int const window_size_right,
             cutlass::FastDivmod const& attention_chunk_divmod,
             cutlass::FastDivmod const& qhead_per_khead_divmod,
-            bool const has_image = false) {
+            int const image_token_end = 0) {
 
         auto [n_block_min, n_block_max] = get_n_block_min_max(
             seqlen_info, m_block, bidb, split_idx, num_splits,
             window_size_left, window_size_right, attention_chunk_divmod, qhead_per_khead_divmod,
-            has_image);
+            image_token_end);
         int const idx_k_new_min = std::max(n_block_min * kBlockN - seqlen_info.seqlen_k_og, 0);
         int const idx_k_new_max = std::min(n_block_max * kBlockN - seqlen_info.seqlen_k_og, seqlen_info.seqlen_k_new);
         int const n_block_new_min = idx_k_new_min / kBlockN;

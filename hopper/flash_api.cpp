@@ -704,7 +704,7 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
         int64_t num_splits,
         std::optional<bool> pack_gqa_,
         int64_t sm_margin,
-        std::optional<at::Tensor> image_token_tag_
+        std::optional<at::Tensor> image_token_end_
         ) {
 
     auto dprops = at::cuda::getCurrentDeviceProperties();
@@ -1145,17 +1145,17 @@ mha_fwd(at::Tensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu_seql
         }
     }
 
-    if (image_token_tag_.has_value()) {
-        auto image_token_tag = image_token_tag_.value();
-        CHECK_DEVICE(image_token_tag);
-        CHECK_CONTIGUOUS(image_token_tag);
-        TORCH_CHECK(image_token_tag.dtype() == torch::kBool, "image_token_tag must have dtype torch.bool");
-        CHECK_SHAPE(image_token_tag, total_q);
-        TORCH_CHECK(is_varlen_q, "image_token_tag requires varlen mode (cu_seqlens_q must be provided)");
-        TORCH_CHECK(is_causal, "image_token_tag requires causal=True");
-        TORCH_CHECK(!params.is_local, "image_token_tag is incompatible with sliding window attention");
-        TORCH_CHECK(attention_chunk == 0, "image_token_tag is incompatible with attention_chunk");
-        params.image_token_tag = static_cast<bool*>(image_token_tag.data_ptr());
+    if (image_token_end_.has_value()) {
+        auto image_token_end = image_token_end_.value();
+        CHECK_DEVICE(image_token_end);
+        CHECK_CONTIGUOUS(image_token_end);
+        TORCH_CHECK(image_token_end.dtype() == torch::kInt32, "image_token_end must have dtype torch.int32");
+        CHECK_SHAPE(image_token_end, total_q);
+        TORCH_CHECK(is_varlen_q, "image_token_end requires varlen mode (cu_seqlens_q must be provided)");
+        TORCH_CHECK(is_causal, "image_token_end requires causal=True");
+        TORCH_CHECK(!params.is_local, "image_token_end is incompatible with sliding window attention");
+        TORCH_CHECK(attention_chunk == 0, "image_token_end is incompatible with attention_chunk");
+        params.image_token_end = static_cast<int*>(image_token_end.data_ptr());
     }
 
     #ifdef FLASHATTENTION_DISABLE_LOCAL
@@ -1719,7 +1719,7 @@ TORCH_LIBRARY(flash_attn_3, m) {
         "int num_splits = 0,"
         "bool? pack_gqa = None,"
         "int sm_margin = 0,"
-        "Tensor? image_token_tag = None) -> (Tensor(out!), Tensor, Tensor, Tensor)");
+        "Tensor? image_token_end = None) -> (Tensor(out!), Tensor, Tensor, Tensor)");
     m.def("bwd("
         "Tensor dout,"
         "Tensor q,"
